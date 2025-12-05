@@ -4,9 +4,9 @@ import itertools
 import io
 
 # ==========================================
-# 1. 核心配置
+# 1. 核心配置与样式
 # ==========================================
-st.set_page_config(page_title="PTCG 战队 BP 沙盘推演", page_icon="♟️", layout="wide")
+st.set_page_config(page_title="PTCG 战队 BP 沙盘推演 (修复双卡组版)", page_icon="♟️", layout="wide")
 
 def get_color_style(val):
     if not isinstance(val, (int, float)): return ""
@@ -18,7 +18,7 @@ def get_color_style(val):
     return "background-color: #ef4444; color: white; font-weight: bold"
 
 # ==========================================
-# 2. 内置默认数据 (你提供的最新版)
+# 2. 内置默认数据
 # ==========================================
 DEFAULT_DATA = [
     { "player": "三毛九鬼龙", "deck": "鬼龙", "matchups": { "比雕恶喷": 2, "尾狸恶喷": 4, "沙奈朵": 3, "鬼龙": 5, "轰鬼": 5, "密勒顿": 4, "勾喷": 6, "LTB": 5, "纯恶轰明月": 6, "水轰明月": 6, "汇流梦幻": 5, "双无梦幻": 6, "水熊": 3, "炎帝铁武者": 2, "古剑豹": 6, "赛富豪": 3, "宙斯系列": 2, "洛奇亚": 6, "卡比兽": 2, "索罗": 2, "毛崖蟹": 2 } },
@@ -84,8 +84,8 @@ def calculate_simulation(team_data, remaining_opponents):
     
     if not remaining_opponents: return None
 
-    # --- 1. 预测对手 Ban (第一层博弈) ---
-    # 对手会Ban掉那个对他们威胁最大的人 (即：打剩余对手总分最低/最好的人)
+    # --- 1. 预测对手 Ban ---
+    # 找出剩余对手中，对我方威胁最大（分最低）的人
     player_threats = {} 
     
     for m in team_data:
@@ -116,14 +116,14 @@ def calculate_simulation(team_data, remaining_opponents):
     best_smart_score = float('inf')
     
     for combo in combos:
-        # 找出该组合内的核心
+        # 在这个组合里，谁是对手最想 Ban 的？
         combo_players_scores = {p: player_threats[p] for p in combo}
         combo_ace = min(combo_players_scores, key=combo_players_scores.get)
         
-        # 假设核心被Ban
+        # 假设这个大哥被 Ban 了 (献祭)
         remaining_3 = [p for p in combo if p != combo_ace]
         
-        # 计算剩余3人总分
+        # 计算剩下 3 个人的总分
         combo_residual_score = sum(player_threats[p] for p in remaining_3)
         
         if combo_residual_score < best_smart_score:
@@ -133,7 +133,6 @@ def calculate_simulation(team_data, remaining_opponents):
     results['pick_combo'] = best_combo
     results['smart_score'] = best_smart_score
     results['sacrificed_ace'] = predicted_enemy_ban 
-    # 注意：这里牺牲的 Ace 未必在 best_combo 里，如果不在，说明我们把大哥藏起来了，或者大哥太强被ban了所以没选
     
     return results
 
@@ -188,20 +187,33 @@ else:
         st.warning("⚠️ 未选择对手")
     else:
         # ========================================
-        # 沙盘推演区
+        # 沙盘推演区 (修复双卡组问题)
         # ========================================
         st.markdown("### 1. 假如我方 Ban 掉...")
         st.caption("请点击下方按钮，模拟我方 Ban 掉某套卡组后的最优解：")
         
-        # 动态生成 Ban 选按钮
-        # 使用 radio 或 columns button
-        # 这里用 radio 比较直观，或者 segmented control (Streamlit 新版特性，这里用 radio 兼容性好)
-        manual_ban = st.radio("选择要 Ban 的目标:", sel_ops, horizontal=True)
+        # 【关键修复】创建带索引的唯一标签
+        # 例如：["沙奈朵 (#1)", "沙奈朵 (#2)", "鬼龙 (#3)"]
+        ban_options_labels = []
+        for idx, op in enumerate(sel_ops):
+            ban_options_labels.append(f"{op} (#{idx+1})")
+            
+        # 让用户选择要Ban的“唯一标签”
+        selected_label = st.radio("选择要 Ban 的目标:", ban_options_labels, horizontal=True)
+        
+        # 解析用户选了第几个
+        # 找到被选中的索引
+        ban_index = ban_options_labels.index(selected_label)
+        
+        # 被Ban的卡组名（用于显示）
+        banned_deck_name = sel_ops[ban_index]
+        
+        # 【关键修复】构建剩余对手列表
+        # 使用索引移除，确保只移除一个，而不移除所有同名卡组
+        remaining_opps = sel_ops.copy()
+        remaining_opps.pop(ban_index)
         
         st.markdown("---")
-        
-        # 根据手动 Ban 的目标进行计算
-        remaining_opps = [op for op in sel_ops if op != manual_ban]
         
         if remaining_opps:
             res = calculate_simulation(current_data, remaining_opps)
@@ -210,7 +222,7 @@ else:
             
             with c1:
                 st.subheader("🔮 局势预测")
-                st.info(f"当我们 Ban 掉 **{manual_ban}** 后，剩余对手为：\n\n" + " / ".join(remaining_opps))
+                st.info(f"Ban 掉 **{banned_deck_name}** (第{ban_index+1}位置) 后，剩余对手：\n\n" + " / ".join(remaining_opps))
                 st.warning(f"⚠️ 预计敌方会 Ban 我方：**{res['predicted_ban']}**")
                 
             with c2:
@@ -236,14 +248,13 @@ else:
                     else:
                         for k in m['matchups']:
                             if clean in k or k in clean: score = m['matchups'][k]; break
-                    r[f"{opp}"] = score
+                    # 表格列名也加上编号，防止重复列名报错
+                    r[f"{opp} (#{i+1})"] = score
                     total_score += score
-                r["⬇️总威胁值"] = total_score # 这一列方便看谁打剩余的最强
+                r["⬇️总威胁值"] = total_score 
                 rows.append(r)
             
-            # 显示表格，并高亮预测被Ban的人
             df_display = pd.DataFrame(rows).set_index("队员")
-            # 排序：威胁值越低越好，排在上面
             df_display = df_display.sort_values("⬇️总威胁值")
             
             st.dataframe(df_display.style.map(get_color_style), use_container_width=True)
