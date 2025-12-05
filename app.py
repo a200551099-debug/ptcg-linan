@@ -4,9 +4,9 @@ import itertools
 import io
 
 # ==========================================
-# 1. 核心配置与样式
+# 1. 核心配置
 # ==========================================
-st.set_page_config(page_title="PTCG 战队 BP 助手 (博弈版)", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="PTCG 战队 BP 沙盘推演", page_icon="♟️", layout="wide")
 
 def get_color_style(val):
     if not isinstance(val, (int, float)): return ""
@@ -18,7 +18,7 @@ def get_color_style(val):
     return "background-color: #ef4444; color: white; font-weight: bold"
 
 # ==========================================
-# 2. 内置默认数据
+# 2. 内置默认数据 (你提供的最新版)
 # ==========================================
 DEFAULT_DATA = [
     { "player": "三毛九鬼龙", "deck": "鬼龙", "matchups": { "比雕恶喷": 2, "尾狸恶喷": 4, "沙奈朵": 3, "鬼龙": 5, "轰鬼": 5, "密勒顿": 4, "勾喷": 6, "LTB": 5, "纯恶轰明月": 6, "水轰明月": 6, "汇流梦幻": 5, "双无梦幻": 6, "水熊": 3, "炎帝铁武者": 2, "古剑豹": 6, "赛富豪": 3, "宙斯系列": 2, "洛奇亚": 6, "卡比兽": 2, "索罗": 2, "毛崖蟹": 2 } },
@@ -77,51 +77,20 @@ def parse_uploaded_csv(file):
     except Exception as e: return None, f"解析错误: {e}"
 
 # ==========================================
-# 4. 智能博弈算法
+# 4. 模拟推演算法
 # ==========================================
-def calculate_smart_bp(team_data, selected_opponents):
+def calculate_simulation(team_data, remaining_opponents):
     results = {}
-    unique_opps = list(set(selected_opponents))
     
-    # --- Step 1: 我们的 Ban (正常逻辑) ---
-    # Ban 掉那个全队打起来最费劲的
-    opp_scores = {}
-    for opp in unique_opps:
-        clean_opp = opp.strip()
-        total = 0
-        for m in team_data:
-            score = 3.0
-            if clean_opp in m['matchups']: score = m['matchups'][clean_opp]
-            else:
-                for k in m['matchups']:
-                    if clean_opp in k or k in clean_opp:
-                        score = m['matchups'][k]; break
-            total += score
-        opp_scores[opp] = total
-            
-    if opp_scores:
-        our_ban_target = max(opp_scores, key=opp_scores.get)
-        our_ban_score = opp_scores[our_ban_target]
-    else:
-        our_ban_target = None; our_ban_score = 0
-        
-    results['our_ban'] = our_ban_target
-    results['our_ban_score'] = our_ban_score
-    
-    # 剩余对手
-    remaining_opps = selected_opponents.copy()
-    if our_ban_target and our_ban_target in remaining_opps: 
-        remaining_opps.remove(our_ban_target)
-    
-    if not remaining_opps: return results
+    if not remaining_opponents: return None
 
-    # --- Step 2: 预测对手 Ban (博弈逻辑) ---
+    # --- 1. 预测对手 Ban (第一层博弈) ---
     # 对手会Ban掉那个对他们威胁最大的人 (即：打剩余对手总分最低/最好的人)
-    player_threats = {} # 我们的队员 -> 对剩余敌人的总分 (越低越强)
+    player_threats = {} 
     
     for m in team_data:
         p_total = 0
-        for opp in remaining_opps:
+        for opp in remaining_opponents:
             clean_opp = opp.strip()
             score = 3.0
             if clean_opp in m['matchups']: score = m['matchups'][clean_opp]
@@ -132,39 +101,29 @@ def calculate_smart_bp(team_data, selected_opponents):
             p_total += score
         player_threats[m['player']] = p_total
         
-    # 找到分最低的 (威胁最大的)
     predicted_enemy_ban = min(player_threats, key=player_threats.get)
     predicted_ban_score = player_threats[predicted_enemy_ban]
     
     results['predicted_ban'] = predicted_enemy_ban
     results['predicted_ban_score'] = predicted_ban_score
-    results['remaining_opps'] = remaining_opps
 
-    # --- Step 3: 智能 Pick (献祭流) ---
-    # 我们选 4 个人。
-    # 假设对手 Ban 掉了这 4 个人里最强的那个 (如果预测的Ban位在里面的话)。
-    # 我们要找一个组合，使得【被 Ban 掉核心后】，剩下的 3 个人依然最强。
-    
+    # --- 2. 智能 Pick (献祭流) ---
     all_members = [m['player'] for m in team_data]
     c_size = min(4, len(all_members))
     combos = list(itertools.combinations(all_members, c_size))
     
     best_combo = None
-    best_smart_score = float('inf') # 越低越好
+    best_smart_score = float('inf')
     
     for combo in combos:
-        # 1. 在这个组合里，谁是对手最想 Ban 的？(威胁最大的)
-        # 并不是直接用 predicted_enemy_ban，因为那个可能不在这个组合里
-        # 我们要看这个组合内部，谁最强
-        
+        # 找出该组合内的核心
         combo_players_scores = {p: player_threats[p] for p in combo}
-        # 这个组合里的“大哥”
         combo_ace = min(combo_players_scores, key=combo_players_scores.get)
         
-        # 2. 假设这个大哥被 Ban 了 (献祭)
+        # 假设核心被Ban
         remaining_3 = [p for p in combo if p != combo_ace]
         
-        # 3. 计算剩下 3 个人的总分
+        # 计算剩余3人总分
         combo_residual_score = sum(player_threats[p] for p in remaining_3)
         
         if combo_residual_score < best_smart_score:
@@ -173,16 +132,17 @@ def calculate_smart_bp(team_data, selected_opponents):
             
     results['pick_combo'] = best_combo
     results['smart_score'] = best_smart_score
+    results['sacrificed_ace'] = predicted_enemy_ban 
+    # 注意：这里牺牲的 Ace 未必在 best_combo 里，如果不在，说明我们把大哥藏起来了，或者大哥太强被ban了所以没选
     
     return results
 
 # ==========================================
 # 5. 界面
 # ==========================================
-st.title("🧠 PTCG 战队 BP 助手 (博弈版)")
+st.title("♟️ PTCG 战队 BP 沙盘推演")
 
-if "analysis_done" not in st.session_state: st.session_state.analysis_done = False
-
+# --- 侧边栏 ---
 with st.sidebar:
     st.header("1. 数据源")
     uploaded_file = st.file_uploader("上传 CSV", type="csv")
@@ -208,69 +168,92 @@ with st.sidebar:
         idx = opts.index(defaults[i]) if defaults[i] in opts else 0
         d = st.selectbox(f"对手 {i+1}", opts, index=idx, key=f"s_{i}")
         if d != "(无)": sel_ops.append(d)
-        
+    
     st.markdown("---")
-    run_calc = st.button("🚀 确认并分析", type="primary", use_container_width=True)
+    run_calc = st.button("🚀 确认并进入推演", type="primary", use_container_width=True)
 
-if run_calc: st.session_state.analysis_done = True
+# --- Session State 管理 ---
+if "sim_active" not in st.session_state: st.session_state.sim_active = False
 
-if not st.session_state.analysis_done:
-    st.info("👈 请选择对手并点击分析")
+if run_calc: st.session_state.sim_active = True
+
+# --- 主界面 ---
+if not st.session_state.sim_active:
+    st.info("👈 请在左侧选择对手并点击确认")
     with st.expander("👀 数据预览"):
         st.dataframe(pd.DataFrame([{'队员':m['player'], **m['matchups']} for m in current_data]).head(), use_container_width=True)
+
 else:
     if not sel_ops:
         st.warning("⚠️ 未选择对手")
     else:
-        st.success(f"✅ 战术分析完成")
-        res = calculate_smart_bp(current_data, sel_ops)
+        # ========================================
+        # 沙盘推演区
+        # ========================================
+        st.markdown("### 1. 假如我方 Ban 掉...")
+        st.caption("请点击下方按钮，模拟我方 Ban 掉某套卡组后的最优解：")
         
-        # 第一行：Ban 和 预测
-        c1, c2 = st.columns(2)
-        with c1:
-            st.error(f"🔴 建议我方 Ban: **{res['our_ban']}**")
-            st.caption(f"如果不Ban它，我方全队总劣势最大 (威胁分 {res['our_ban_score']})")
-            
-        with c2:
-            st.warning(f"🔮 预测敌方 Ban: **{res['predicted_ban']}**")
-            st.caption(f"他是我们队对阵【剩余对手】时的头号杀手 (威胁分 {res['predicted_ban_score']})，大概率会被针对。")
-            
+        # 动态生成 Ban 选按钮
+        # 使用 radio 或 columns button
+        # 这里用 radio 比较直观，或者 segmented control (Streamlit 新版特性，这里用 radio 兼容性好)
+        manual_ban = st.radio("选择要 Ban 的目标:", sel_ops, horizontal=True)
+        
         st.markdown("---")
         
-        # 第二行：Pick
-        st.subheader("🟢 推荐 4 人大名单 (献祭流策略)")
-        if res['pick_combo']:
-            st.success(f"**{' + '.join(res['pick_combo'])}**")
+        # 根据手动 Ban 的目标进行计算
+        remaining_opps = [op for op in sel_ops if op != manual_ban]
+        
+        if remaining_opps:
+            res = calculate_simulation(current_data, remaining_opps)
             
-            st.info(f"""
-            **💡 推荐理由：**
-            我们把 **{res['predicted_ban']}** (或其他强力核心) 放进去作为“诱饵”。
-            即使对手真的Ban掉了这个组合里最强的大哥，**剩下的 3 个人依然是所有备选方案里最能打的**。
-            (抗压评分: {res['smart_score']})
-            """)
-        else:
-            st.info("数据不足")
+            c1, c2 = st.columns([1, 1])
             
-        st.markdown("---")
-        # 详情表
-        st.subheader("📊 实时优劣势数据")
-        st.caption("以下分数基于当前选择的对手：")
-        rows = []
-        for m in current_data:
-            r = {"队员": f"{m['player']}"}
-            for i, opp in enumerate(sel_ops):
-                clean = opp.strip()
-                score = 3.0
-                if clean in m['matchups']: score = m['matchups'][clean]
+            with c1:
+                st.subheader("🔮 局势预测")
+                st.info(f"当我们 Ban 掉 **{manual_ban}** 后，剩余对手为：\n\n" + " / ".join(remaining_opps))
+                st.warning(f"⚠️ 预计敌方会 Ban 我方：**{res['predicted_ban']}**")
+                
+            with c2:
+                st.subheader("🟢 推荐 4 人名单")
+                if res['pick_combo']:
+                    st.success(f"**{' + '.join(res['pick_combo'])}**")
+                    st.write(f"抗压评分: **{res['smart_score']}** (越低越好)")
+                    st.caption("策略：假设我们队内针对剩余卡组最强的人被 Ban，这 4 人的剩余战力依然是最高的。")
                 else:
-                    for k in m['matchups']:
-                        if clean in k or k in clean: score = m['matchups'][k]; break
-                r[f"{opp} #{i+1}"] = score
-            rows.append(r)
-        st.dataframe(pd.DataFrame(rows).set_index("队员").style.map(get_color_style), use_container_width=True)
+                    st.error("无法计算推荐名单")
+            
+            # 详情表
+            st.markdown("---")
+            st.subheader(f"📊 针对剩余对手 ({len(remaining_opps)}套) 的优劣势表")
+            rows = []
+            for m in current_data:
+                r = {"队员": f"{m['player']}"}
+                total_score = 0
+                for i, opp in enumerate(remaining_opps):
+                    clean = opp.strip()
+                    score = 3.0
+                    if clean in m['matchups']: score = m['matchups'][clean]
+                    else:
+                        for k in m['matchups']:
+                            if clean in k or k in clean: score = m['matchups'][k]; break
+                    r[f"{opp}"] = score
+                    total_score += score
+                r["⬇️总威胁值"] = total_score # 这一列方便看谁打剩余的最强
+                rows.append(r)
+            
+            # 显示表格，并高亮预测被Ban的人
+            df_display = pd.DataFrame(rows).set_index("队员")
+            # 排序：威胁值越低越好，排在上面
+            df_display = df_display.sort_values("⬇️总威胁值")
+            
+            st.dataframe(df_display.style.map(get_color_style), use_container_width=True)
+            
+        else:
+            st.error("对手卡组数量不足，无法推演")
         
-        if st.button("🔄 重置"):
-            st.session_state.analysis_done = False
+        # 重置
+        if st.button("🔄 重选对手"):
+            st.session_state.sim_active = False
             st.rerun()
 
 
